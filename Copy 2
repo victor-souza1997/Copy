@@ -1,14 +1,16 @@
 import re
+import pandas as pd
 
-def extract_boot_time(dump_file):
+def extract_boot_events(dump_file):
     """
     Extracts boot-related timestamps from a dumpstate file.
-    Returns the boot time duration in seconds.
+    Returns a dictionary with event timestamps.
     """
     boot_events = {
         "kernel": None,
         "fsck": None,
         "zygote": None,
+        "system_server": None,
         "boot_completed": None
     }
 
@@ -17,6 +19,7 @@ def extract_boot_time(dump_file):
         "kernel": r"\s*(\d+\.\d+) Booting Linux Kernel",
         "fsck": r"\s*(\d+\.\d+) fsck completed",
         "zygote": r"\s*(\d+\.\d+) Starting Zygote",
+        "system_server": r"\s*(\d+\.\d+) SystemServer is ready",
         "boot_completed": r"\s*(\d+\.\d+) ACTION_BOOT_COMPLETED"
     }
 
@@ -27,24 +30,32 @@ def extract_boot_time(dump_file):
                 if match and boot_events[event] is None:
                     boot_events[event] = float(match.group(1))
 
-    # Calculate total boot time
-    if boot_events["kernel"] is not None and boot_events["boot_completed"] is not None:
-        boot_time = boot_events["boot_completed"] - boot_events["kernel"]
-    else:
-        boot_time = None  # Boot time could not be determined
-
-    return boot_events, boot_time
+    return boot_events
 
 # File paths for DUT and REF logs
-dut_log = "dut_dumpstate.txt"  # Change this to your DUT dumpstate file
-ref_log = "ref_dumpstate.txt"  # Change this to your REF dumpstate file
+dut_log = "dut_dumpstate.txt"  # Update with your DUT dumpstate file path
+ref_log = "ref_dumpstate.txt"  # Update with your REF dumpstate file path
 
-# Extract boot times
-dut_events, dut_time = extract_boot_time(dut_log)
-ref_events, ref_time = extract_boot_time(ref_log)
+# Extract boot event timestamps
+dut_events = extract_boot_events(dut_log)
+ref_events = extract_boot_events(ref_log)
 
-# Print results
-print("\n=== Boot Time Comparison ===")
-if dut_time and ref_time:
-    print(f"DUT Boot Time: {dut_time:.2f} sec")
-    print(f"REF Boot Time: {
+# Create a DataFrame to compare events
+boot_comparison = pd.DataFrame.from_dict(
+    {
+        "DUT": dut_events,
+        "REF": ref_events
+    }
+)
+
+# Calculate deltas (DUT - REF)
+boot_comparison["Delta (DUT - REF)"] = boot_comparison["DUT"] - boot_comparison["REF"]
+
+# Identify which stage is slower
+boot_comparison["Status"] = boot_comparison["Delta (DUT - REF)"].apply(
+    lambda x: "⚠ Slower on DUT" if x > 0 else ("✅ Faster on DUT" if x < 0 else "🔄 Same time")
+)
+
+# Display results
+import ace_tools as tools
+tools.display_dataframe_to_user(name="Boot Time Comparison", dataframe=boot_comparison)
