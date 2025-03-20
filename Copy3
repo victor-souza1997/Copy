@@ -33,11 +33,16 @@ def logcat_listener():
             text=True
         )
         
-        with open(LOG_FILE, "w") as log_file:
-            for line in iter(process.stdout.readline, ""):
+        with open(LOG_FILE, "a") as log_file:  # Append mode
+            while True:
+                line = process.stdout.readline()
+                if not line:
+                    break  # Stop if there's no more output
+                
                 if any(keyword.lower() in line.lower() for keyword in FILTER_KEYWORDS):
                     print(line.strip())  # Display in console
-                    log_file.write(line)  # Save to file
+                    log_file.write(line)  # Append to log file
+                    log_file.flush()  # Ensure immediate write
     
     except Exception as e:
         print(f"Error capturing logcat: {e}")
@@ -53,10 +58,11 @@ def main():
         # Fetch thermal data every 5 seconds
         thermal_data = get_thermistor_data()
         print("\nThermistor Data:\n", thermal_data)
-        
+
         # Save thermal data to file
-        with open(LOG_FILE, "a") as log_file:
+        with open(LOG_FILE, "a") as log_file:  # Append mode
             log_file.write("\nThermistor Data:\n" + thermal_data + "\n")
+            log_file.flush()
 
         time.sleep(5)  # Adjust sampling rate as needed
 
