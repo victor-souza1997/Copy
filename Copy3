@@ -1,0 +1,64 @@
+import subprocess
+import threading
+import time
+
+# Path to ADB executable (Update if necessary)
+ADB_PATH = "adb"
+
+# Keywords to filter from logcat
+FILTER_KEYWORDS = ["temperature", "Thermal", "network"]
+
+# Log output file
+LOG_FILE = "android_log.txt"
+
+def get_thermistor_data():
+    """Fetches thermal sensor data from the Android device."""
+    try:
+        result = subprocess.run(
+            [ADB_PATH, "shell", "dumpsys thermal"],
+            capture_output=True,
+            text=True
+        )
+        return result.stdout
+    except Exception as e:
+        return f"Error fetching thermal data: {e}"
+
+def logcat_listener():
+    """Captures logcat logs in real-time, filtering specific keywords."""
+    try:
+        process = subprocess.Popen(
+            [ADB_PATH, "logcat", "-v", "time"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
+        )
+        
+        with open(LOG_FILE, "w") as log_file:
+            for line in iter(process.stdout.readline, ""):
+                if any(keyword.lower() in line.lower() for keyword in FILTER_KEYWORDS):
+                    print(line.strip())  # Display in console
+                    log_file.write(line)  # Save to file
+    
+    except Exception as e:
+        print(f"Error capturing logcat: {e}")
+
+def main():
+    print("Starting Android Thermistor Logger...")
+
+    # Start logcat listener in a separate thread
+    logcat_thread = threading.Thread(target=logcat_listener, daemon=True)
+    logcat_thread.start()
+
+    while True:
+        # Fetch thermal data every 5 seconds
+        thermal_data = get_thermistor_data()
+        print("\nThermistor Data:\n", thermal_data)
+        
+        # Save thermal data to file
+        with open(LOG_FILE, "a") as log_file:
+            log_file.write("\nThermistor Data:\n" + thermal_data + "\n")
+
+        time.sleep(5)  # Adjust sampling rate as needed
+
+if __name__ == "__main__":
+    main()
