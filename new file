@@ -1,0 +1,201 @@
+import subprocess
+import tempfile
+import os
+
+def adb_shell(cmd):
+    result = subprocess.run(["adb", "shell", cmd], capture_output=True, text=True)
+    return result.stdout.strip()
+
+def list_thermal_zones():
+    output = adb_shell("ls /sys/class/thermal/")
+    return [line for line in output.splitlines() if line.startswith("thermal_zone")]
+
+def map_thermistors():
+    zones = list_thermal_zones()
+    mapped = []
+
+    for zone in zones:
+        base_path = f"/sys/class/thermal/{zone}"
+        type_path = f"{base_path}/type"
+        temp_path = f"{base_path}/temp"
+
+        sensor_type = adb_shell(f"cat {type_path}")
+        if sensor_type:
+            mapped.append({
+                "type": sensor_type,
+                "temp_path": temp_path
+            })
+
+    return mapped
+
+def save_to_temp_file(mapped_data):
+    temp_file = tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.txt')
+    for item in mapped_data:
+        temp_file.write(f"{item['type']}|{item['temp_path']}\n")
+        #temp_file.write(f"Path to temp: {item['temp_path']}\n\n")
+    temp_file.close()
+    return temp_file.name
+
+def mapping():
+    print("Mapping Files")
+    thermistors = map_thermistors()
+    path = save_to_temp_file(thermistors)
+    
+
+if __name__ == "__main__":
+    mapping()
+
+
+import tkinter as tk
+from tkinter import ttk
+import subprocess
+import tempfile
+import threading
+import time
+import glob
+import os
+import tempfile
+from datetime import datetime
+class ThermistorMonitor:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Android Thermistor Monitor")
+
+        self.thermistors = []
+        self.check_vars = []
+        self.temp_labels = []
+        self.sampling_interval = tk.IntVar(value=5)
+        self.running = False
+        self.output_filename = tk.StringVar(value="samples.csv")
+
+        self.build_ui()
+        self.load_thermistors()
+
+    def build_ui(self):
+        frame = ttk.Frame(self.root, padding=10)
+        frame.pack(fill="both", expand=True)
+
+        # Sampling interval input
+        ttk.Label(frame, text="Sampling interval (seconds):").pack(anchor="w")
+        ttk.Entry(frame, textvariable=self.sampling_interval, width=5).pack(anchor="w")
+        # Output filename input
+        ttk.Label(frame, text="Output file name (CSV):").pack(anchor="w", pady=(10, 0))
+        ttk.Entry(frame, textvariable=self.output_filename, width=40).pack(anchor="w")
+
+        # Thermistors checkboxes and temp labels
+        canvas = tk.Canvas(frame, height=300)
+        scrollbar = ttk.Scrollbar(frame, orient="vertical", command=canvas.yview)
+        self.sensor_frame = ttk.Frame(canvas)
+
+        self.sensor_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+
+        canvas.create_window((0, 0), window=self.sensor_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+        # Start button
+        self.start_button = ttk.Button(frame, text="Start Sampling", command=self.toggle_sampling)
+        self.start_button.pack(pady=5)
+
+    def run_python_script(self):
+        subprocess.run(["python3", "mapping.py"])
+        temp_dir = tempfile.gettempdir()
+
+        matches = glob.glob(os.path.join(temp_dir, "tmp*.txt"))
+        if matches:
+            print(matches)
+            return max(matches, key=os.path.getctime)  # get most recent
+
+        return None
+
+    def load_thermistors(self):
+        file_path = self.run_python_script()
+        if not file_path:
+            print("Failed to find output file.")
+            return
+
+        with open(file_path, "r") as f:
+            lines = f.readlines()
+
+        self.thermistors.clear()
+        self.check_vars.clear()
+        for widget in self.sensor_frame.winfo_children():
+            widget.destroy()
+
+        i = 0
+        while i < len(lines):
+            #if lines[i].startswith("Sensor:"):
+            sensor = lines[i].strip().split("|")[0].strip()
+            path = lines[i].strip().split("|")[1].strip()
+            print(sensor, path)
+            var = tk.BooleanVar()
+            chk = ttk.Checkbutton(self.sensor_frame, text=sensor, variable=var)
+            chk.grid(row=len(self.check_vars), column=0, sticky="w")
+
+            temp_label = ttk.Label(self.sensor_frame, text="N/A")
+            temp_label.grid(row=len(self.check_vars), column=1, sticky="e")
+
+            self.thermistors.append({"sensor": sensor, "path": path})
+            self.check_vars.append(var)
+            self.temp_labels.append(temp_label)
+            i += 1
+
+    def toggle_sampling(self):
+        if self.running:
+            self.running = False
+            self.start_button.config(text="Start Sampling")
+        else:
+            self.running = True
+            self.start_button.config(text="Stop Sampling")
+            threading.Thread(target=self.sampling_loop, daemon=True).start()
+
+    def sampling_loop(self):
+        header_written = False
+        file_path = self.output_filename.get()
+        while self.running:
+            selected = []
+            labels = []
+            for idx, therm in enumerate(self.thermistors):
+                if self.check_vars[idx].get():
+                    selected.append(therm)
+                    labels.append(self.temp_labels[idx])
+
+            if selected:
+                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                row = [timestamp]
+                for i, therm in enumerate(selected):
+                    cmd = f'adb shell cat {therm["path"]}'
+                    try:
+                        result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=2)
+                        output = result.stdout.strip()
+                        if output:
+                            temp_c = float(output) / 1000.0
+                            labels[i].config(text=f"{temp_c:.1f} °C")
+                            row.append(f"{temp_c:.1f}")
+                        else:
+                            labels[i].config(text="N/A")
+                            row.append("N/A")
+                    except Exception:
+                        labels[i].config(text="Err")
+                        row.append("Err")
+
+                try:
+                    with open(file_path, "a") as f:
+                        if not header_written:
+                            header = ["timestamp"] + [t["sensor"] for t in selected]
+                            f.write(",".join(header) + "\n")
+                            header_written = True
+                        f.write(",".join(row) + "\n")
+                except Exception as e:
+                    print(f"Error writing to file: {e}")
+
+            time.sleep(self.sampling_interval.get())
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = ThermistorMonitor(root)
+    root.mainloop()
