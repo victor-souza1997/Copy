@@ -1,0 +1,73 @@
+import re
+import argparse
+
+def extrair_kernel_erros(caminho_log):
+    with open(caminho_log, 'r', errors='ignore') as f:
+        linhas = f.readlines()
+
+    eventos = []
+    em_evento = False
+    bloco_atual = []
+    thread_info = ""
+    tipo_evento = "Kernel Panic"
+
+    # Padrões principais
+    padrao_panic = re.compile(r'(Kernel panic|Oops|BUG|Unable to handle kernel)', re.IGNORECASE)
+    padrao_watchdog = re.compile(r'(watchdog:|NMI watchdog:|soft lockup|hard LOCKUP|rcu_sched)', re.IGNORECASE)
+    padrao_trace = re.compile(r'\s+<.*>')
+    padrao_thread = re.compile(r'CPU: \d+ PID: (\d+) Comm: ([^\s]+)')
+
+    for i, linha in enumerate(linhas):
+        if padrao_panic.search(linha):
+            em_evento = True
+            tipo_evento = "Kernel Panic"
+            bloco_atual = [linha]
+            # Busca info da thread próxima
+            for j in range(max(0, i-10), i+1):
+                match = padrao_thread.search(linhas[j])
+                if match:
+                    thread_info = f"Thread: {match.group(2)} (PID {match.group(1)})"
+                    bloco_atual.insert(0, thread_info + "\n")
+                    break
+
+        elif padrao_watchdog.search(linha):
+            em_evento = True
+            tipo_evento = "Watchdog Reset"
+            bloco_atual = [linha]
+            # Busca info da thread
+            for j in range(max(0, i-10), i+1):
+                match = padrao_thread.search(linhas[j])
+                if match:
+                    thread_info = f"Thread: {match.group(2)} (PID {match.group(1)})"
+                    bloco_atual.insert(0, thread_info + "\n")
+                    break
+
+        elif em_evento:
+            bloco_atual.append(linha)
+            if 'Call Trace:' in linha:
+                for j in range(i+1, len(linhas)):
+                    if padrao_trace.match(linhas[j]):
+                        bloco_atual.append(linhas[j])
+                    else:
+                        break
+                eventos.append((tipo_evento, bloco_atual))
+                em_evento = False
+
+    return eventos
+
+def main():
+    parser = argparse.ArgumentParser(description="Extrator de Kernel Panic e Watchdog Resets")
+    parser.add_argument('--log', default='/var/log/kern.log', help='Caminho para o arquivo de log do kernel')
+    args = parser.parse_args()
+
+    eventos = extrair_kernel_erros(args.log)
+    if not eventos:
+        print("Nenhum erro crítico do kernel identificado.")
+    else:
+        for idx, (tipo, bloco) in enumerate(eventos):
+            print(f"\n====== {tipo.upper()} #{idx+1} ======")
+            for linha in bloco:
+                print(linha.strip())
+
+if __name__ == "__main__":
+    main()
