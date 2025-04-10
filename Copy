@@ -1,0 +1,95 @@
+import re
+import argparse
+import os
+
+def extrair_kernel_erros_de_arquivo(caminho_arquivo):
+    eventos = []
+    try:
+        with open(caminho_arquivo, 'r', errors='ignore') as f:
+            linhas = f.readlines()
+    except Exception as e:
+        print(f"[ERRO] Não foi possível ler {caminho_arquivo}: {e}")
+        return eventos
+
+    em_evento = False
+    bloco_atual = []
+    thread_info = ""
+    tipo_evento = "Kernel Panic"
+
+    padrao_panic = re.compile(r'(Kernel panic|Oops|BUG|Unable to handle kernel)', re.IGNORECASE)
+    padrao_watchdog = re.compile(r'(watchdog:|NMI watchdog:|soft lockup|hard LOCKUP|rcu_sched)', re.IGNORECASE)
+    padrao_trace = re.compile(r'\s+<.*>')
+    padrao_thread = re.compile(r'CPU: \d+ PID: (\d+) Comm: ([^\s]+)')
+
+    for i, linha in enumerate(linhas):
+        if padrao_panic.search(linha):
+            em_evento = True
+            tipo_evento = "Kernel Panic"
+            bloco_atual = [linha]
+            for j in range(max(0, i-10), i+1):
+                match = padrao_thread.search(linhas[j])
+                if match:
+                    thread_info = f"Thread: {match.group(2)} (PID {match.group(1)})"
+                    bloco_atual.insert(0, thread_info + "\n")
+                    break
+
+        elif padrao_watchdog.search(linha):
+            em_evento = True
+            tipo_evento = "Watchdog Reset"
+            bloco_atual = [linha]
+            for j in range(max(0, i-10), i+1):
+                match = padrao_thread.search(linhas[j])
+                if match:
+                    thread_info = f"Thread: {match.group(2)} (PID {match.group(1)})"
+                    bloco_atual.insert(0, thread_info + "\n")
+                    break
+
+        elif em_evento:
+            bloco_atual.append(linha)
+            if 'Call Trace:' in linha:
+                for j in range(i+1, len(linhas)):
+                    if padrao_trace.match(linhas[j]):
+                        bloco_atual.append(linhas[j])
+                    else:
+                        break
+                eventos.append((tipo_evento, caminho_arquivo, bloco_atual))
+                em_evento = False
+
+    return eventos
+
+def varrer_diretorio(caminho_pasta):
+    arquivos = []
+    for raiz, _, nomes_arquivos in os.walk(caminho_pasta):
+        for nome in nomes_arquivos:
+            if nome.endswith(('.log', '.txt')) or '.' not in nome:
+                arquivos.append(os.path.join(raiz, nome))
+    return arquivos
+
+def main():
+    parser = argparse.ArgumentParser(description="Extrator de Kernel Panic e Watchdog Resets em múltiplos arquivos")
+    parser.add_argument('--folder', required=True, help='Pasta contendo arquivos de log')
+    args = parser.parse_args()
+
+    arquivos = varrer_diretorio(args.folder)
+
+    if not arquivos:
+        print("Nenhum arquivo de log encontrado na pasta.")
+        return
+
+    todos_eventos = []
+    for caminho in arquivos:
+        print(f"[LOADING] Lendo arquivo: {caminho}")
+        eventos = extrair_kernel_erros_de_arquivo(caminho)
+        todos_eventos.extend(eventos)
+
+    if not todos_eventos:
+        print("\nNenhum erro crítico do kernel identificado.")
+    else:
+        for idx, (tipo, origem, bloco) in enumerate(todos_eventos):
+            print(f"\n====== {tipo.upper()} #{idx+1} ======")
+            print(f"[ARQUIVO] {origem}")
+            for linha in bloco:
+                print(linha.strip())
+
+if __name__ == "__main__":
+    main()
