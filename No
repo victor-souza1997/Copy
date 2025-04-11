@@ -1,0 +1,2 @@
+https://a3jsc61v1xfm5-ats.iot.us-east-2.amazonaws.com/things/test/shadow
+
