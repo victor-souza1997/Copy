@@ -1,0 +1,127 @@
+import os
+import re
+
+def extract_boot_events(path):
+    with open(path, encoding="utf-8", errors="ignore") as f:
+        lines = f.readlines()
+
+    boot_events = {}
+    inside_section = False
+    for line in lines:
+        if 'Boot Events' in line and 'delta' in line:
+            inside_section = True
+            continue
+        if inside_section:
+            if re.match(r"-{3,}", line) or line.strip() == "":
+                continue
+            if "SystemServer services" in line or "ENHANCED BOOT STAT" in line:
+                break
+            match = re.match(r"([!@A-Za-z0-9_:().\-\s]+)\s+(\d+)\s+(\d+)\s+(\d+)", line.strip())
+            if match:
+                label = match.group(1).strip()
+                boot_time = int(match.group(2))
+                boot_events[label] = boot_time
+    return boot_events
+
+def compare_boot_times(ref_events, dut_events):
+    ref_start = min(ref_events.values())
+    dut_start = min(dut_events.values())
+
+    ref_end = ref_events.get("!@Boot: bootcomplete", None)
+    dut_end = dut_events.get("!@Boot: bootcomplete", None)
+
+    if ref_end is None or dut_end is None:
+        raise ValueError("bootcomplete not found in one of the logs.")
+
+    ref_total = ref_end - ref_start
+    dut_total = dut_end - dut_start
+    percent_diff = (dut_total - ref_total) / ref_total * 100
+
+    return ref_total, dut_total, percent_diff
+
+def compare_events(ref_events, dut_events):
+    labels = set(ref_events) & set(dut_events)
+    diffs = []
+    for label in labels:
+        diff = dut_events[label] - ref_events[label]
+        if abs(diff) > 50:
+            diffs.append((label, ref_events[label], dut_events[label], diff))
+    return sorted(diffs, key=lambda x: -abs(x[3]))
+
+def extract_took_times(path):
+    took_times = {}
+    pattern = re.compile(r"Took (\d+)ms by (.+)")
+    with open(path, encoding="utf-8", errors="ignore") as f:
+        for line in f:
+            match = pattern.search(line)
+            if match:
+                duration = int(match.group(1))
+                service = match.group(2).strip().strip("'\"")
+                took_times[service] = duration
+    return took_times
+
+def extract_init_service_times(path):
+    start_pattern = re.compile(r"\[\s*(\d+\.\d+)\].*init: starting service '(.+)'")
+    end_pattern = re.compile(r"\[\s*(\d+\.\d+)\].*init: \.\.\. started service '(.+)'")
+    start_times = {}
+    service_durations = {}
+
+    with open(path, encoding="utf-8", errors="ignore") as f:
+        for line in f:
+            start_match = start_pattern.search(line)
+            if start_match:
+                time = float(start_match.group(1))
+                name = start_match.group(2)
+                start_times[name] = time
+            else:
+                end_match = end_pattern.search(line)
+                if end_match:
+                    time = float(end_match.group(1))
+                    name = end_match.group(2)
+                    if name in start_times:
+                        duration = (time - start_times[name]) * 1000  # em ms
+                        service_durations[name] = round(duration, 2)
+
+    return service_durations
+
+def compare_generic(ref, dut, label):
+    print(f"\n{label}:")
+    print(f"{'Name':60} {'REF(ms)':>10} {'DUT(ms)':>10} {'Diff(ms)':>10}")
+    print("-" * 90)
+    for key in sorted(set(ref.keys()).union(dut.keys())):
+        ref_val = ref.get(key, 0)
+        dut_val = dut.get(key, 0)
+        diff = dut_val - ref_val
+        if abs(diff) > 50:
+            print(f"{key:60} {ref_val:10} {dut_val:10} {diff:10}")
+
+def main():
+    ref_path = "ref/dumpstate.txt"
+    dut_path = "dut/dumpstate.txt"
+
+    ref_events = extract_boot_events(ref_path)
+    dut_events = extract_boot_events(dut_path)
+
+    ref_total, dut_total, percent_diff = compare_boot_times(ref_events, dut_events)
+
+    print(f"REF boot time: {ref_total} ms")
+    print(f"DUT boot time: {dut_total} ms")
+    print(f"Boot time difference: {percent_diff:.2f}%")
+    print("Boot time status:", "OK" if percent_diff <= 10 else "DUT is slower beyond 10% threshold")
+
+    print("\nEvent Differences:")
+    print(f"{'Event':60} {'REF(ms)':>10} {'DUT(ms)':>10} {'Diff(ms)':>10}")
+    print("-" * 90)
+    for label, ref_time, dut_time, diff in compare_events(ref_events, dut_events):
+        print(f"{label:60} {ref_time:10} {dut_time:10} {diff:10}")
+
+    ref_took = extract_took_times(ref_path)
+    dut_took = extract_took_times(dut_path)
+    compare_generic(ref_took, dut_took, "Took Times (service durations)")
+
+    ref_init = extract_init_service_times(ref_path)
+    dut_init = extract_init_service_times(dut_path)
+    compare_generic(ref_init, dut_init, "Init Services Startup Time")
+
+if __name__ == "__main__":
+    main()
