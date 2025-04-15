@@ -1,0 +1,61 @@
+import spacy
+import re
+
+# Carregando modelos de NLP para cada idioma
+nlp_models = {
+    "en": spacy.load("en_core_web_sm"),
+    "pt": spacy.load("pt_core_news_sm"),
+    "es": spacy.load("es_core_news_sm"),
+}
+
+# Mapeamento de categorias com palavras-chave
+CATEGORIES = {
+    "popup_error": ["popup", "pop-up", "mensagem de erro", "ventana emergente", "cuadro de error"],
+    "app_error": ["erro no app", "app error", "fallo en la aplicación", "falha no aplicativo", "problema no app", "error de app"],
+    "overheat": ["overheat", "esquentando", "calor", "quente", "caliente", "muy caliente", "overheating", "temperatura"],
+    "sluggish": ["lento", "demora", "trava", "lag", "sluggish", "demorado", "lentitud", "laggy"],
+    "crash": ["travou", "crash", "cerró solo", "fechou sozinho", "se cerró", "crashed", "crasheou"],
+    "power_off": ["desligou", "apagou", "se apagó", "power off", "reboot", "reinicia", "reinició", "shutdown"],
+    "cannot_install": ["não consigo instalar", "no puedo instalar", "can't install", "unable to install"],
+    "cannot_update": ["não consigo atualizar", "no puedo actualizar", "can't update", "unable to update"]
+}
+
+def detect_language(text):
+    """Regra simples baseada em palavras-chave para detectar idioma"""
+    if any(word in text.lower() for word in ["não", "consegui", "desligou", "erro"]):
+        return "pt"
+    elif any(word in text.lower() for word in ["no puedo", "se cerró", "actualizar", "caliente"]):
+        return "es"
+    else:
+        return "en"
+
+def preprocess(text):
+    text = text.lower()
+    text = re.sub(r"[^\w\s]", " ", text)  # remove símbolos
+    return text
+
+def detect_problems(text):
+    lang = detect_language(text)
+    nlp = nlp_models[lang]
+    doc = nlp(preprocess(text))
+    
+    found = set()
+    for category, keywords in CATEGORIES.items():
+        for kw in keywords:
+            if kw.lower() in doc.text:
+                found.add(category)
+                break  # evita duplicação
+
+    return list(found)
+
+# 🔍 Exemplo de uso
+if __name__ == "__main__":
+    texts = [
+        "Meu celular está esquentando muito e trava quando abro o WhatsApp.",
+        "My phone shuts down randomly and shows a pop-up error message.",
+        "No puedo instalar ninguna app nueva, y el teléfono va muy lento.",
+    ]
+
+    for i, t in enumerate(texts, 1):
+        print(f"\n📝 Texto {i}: {t}")
+        print("📌 Problemas detectados:", detect_problems(t))
