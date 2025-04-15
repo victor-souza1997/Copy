@@ -1,0 +1,123 @@
+import os
+import re
+import argparse
+import zipfile
+import tempfile
+
+def extract_text_from_file(filepath):
+    try:
+        with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
+            return f.read()
+    except Exception as e:
+        print(f"[Erro] Não foi possível ler {filepath}: {e}")
+        return ""
+
+def find_matches(label, pattern, content, max_results=5):
+    matches = re.findall(pattern, content, flags=re.MULTILINE)
+    results = []
+    if matches:
+        results.append(f"{label}")
+        for match in matches[:max_results]:
+            if isinstance(match, tuple):
+                match_str = " ".join(match)
+            else:
+                match_str = match
+            results.append(f"  -> {match_str.strip()}")
+    return results
+
+def analyze_cpu(content):
+    return find_matches("Top consumidores de CPU:",
+                        r"(\d+\.\d+)%\s+\d+/\d+\s+([a-zA-Z0-9_\.]+)", content)
+
+def analyze_memory(content):
+    results = []
+    results += find_matches("lowmemorykiller/oom:", r".*(lowmemorykiller|oom).*", content)
+    results += find_matches("GC_FOR_ALLOC:", r".*(GC_FOR_ALLOC).*", content)
+    return results
+
+def analyze_thermal(content):
+    return find_matches("Possível thermal throttling:", r".*thermal.*throttle.*", content)
+
+def analyze_ui(content):
+    return find_matches("Frames pulados:", r".*Skipped.*frames.*", content)
+
+def analyze_all(content):
+    results = (
+        analyze_cpu(content) +
+        analyze_memory(content) +
+        analyze_thermal(content) +
+        analyze_ui(content)
+    )
+    return results or ["Nenhum indicador claro detectado."]
+
+def find_dumpstate_file(folder):
+    dump_regex = re.compile(r"dumpstate\w*", re.IGNORECASE)
+    for root, dirs, files in os.walk(folder):
+        for file in files:
+            if dump_regex.match(file):
+                return os.path.join(root, file)
+    return None
+
+def extract_zip(zip_path):
+    with tempfile.TemporaryDirectory() as tmpdirname:
+        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+            zip_ref.extractall(tmpdirname)
+            dump_file = find_dumpstate_file(tmpdirname)
+            if dump_file:
+                return extract_text_from_file(dump_file)
+    return ""
+
+def save_results(folder_or_name, lines, mode, from_path=False):
+    os.makedirs("result", exist_ok=True)
+    base_name = os.path.basename(folder_or_name.rstrip("/\\"))
+    output_file = os.path.join("result", f"{base_name}_{mode}_analysis.txt")
+    with open(output_file, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines))
+    print(f"Resultados salvos em: {output_file}")
+    return base_name, lines
+
+def process_file(path, mode):
+    print(f"Analisando arquivo direto: {path}")
+    if path.lower().endswith(".zip"):
+        content = extract_zip(path)
+    else:
+        content = extract_text_from_file(path)
+    if not content:
+        print("Não foi possível extrair conteúdo do arquivo.")
+        return
+    results = run_analysis(mode, content)
+
+    print("\nAchados:")
+    for line in results:
+        print(line)
+
+    save_results(path, results, mode, from_path=True)
+
+def run_analysis(mode, content):
+    if mode == "cpu":
+        return analyze_cpu(content)
+    elif mode == "memory":
+        return analyze_memory(content)
+    elif mode == "thermal":
+        return analyze_thermal(content)
+    elif mode == "ui":
+        return analyze_ui(content)
+    else:
+        return analyze_all(content)
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--mode", choices=["cpu", "memory", "thermal", "ui", "all"], default="all",
+                        help="Modo de análise: cpu, memory, thermal, ui, all")
+    parser.add_argument("--input", help="Caminho direto para um dumpstate ou arquivo .zip")
+    args = parser.parse_args()
+
+    os.makedirs("result", exist_ok=True)
+
+    if args.input:
+        process_file(args.input, args.mode)
+    else:
+        print("Este script com evidência só suporta uso com --input por enquanto.")
+
+if __name__ == "__main__":
+    main()
