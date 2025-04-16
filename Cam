@@ -1,0 +1,58 @@
+import os
+import re
+from pathlib import Path
+
+PATTERNS = {
+    "ANR": r"\bANR\b",
+    "FATAL EXCEPTION": r"FATAL EXCEPTION",
+    "FATAL SIGNAL": r"Fatal signal",
+    "CAMERA ERROR": r"(CameraService|camera error|CameraProvider|E Camera)"
+}
+
+# Lines that help identify thread traces
+TRACE_PATTERNS = [
+    r"pid:\s*\d+,\s*tid:\s*\d+",
+    r"Cmd line: .*",
+    r"signal \d+",
+    r"#\d+\s+pc\s+.*"  # stack trace lines
+]
+
+OUTPUT_FILE = "summary_camera_anr_with_trace.txt"
+
+def find_matches_and_trace(filepath: Path):
+    results = []
+    try:
+        with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
+            lines = f.readlines()
+            for idx, line in enumerate(lines):
+                for key, pattern in PATTERNS.items():
+                    if re.search(pattern, line, re.IGNORECASE):
+                        context = [f"{key} FOUND: {line.strip()}"]
+                        # Look ahead for trace context
+                        for offset in range(1, 15):  # Next 15 lines for trace
+                            if idx + offset < len(lines):
+                                lookahead = lines[idx + offset]
+                                if any(re.search(tp, lookahead) for tp in TRACE_PATTERNS):
+                                    context.append(lookahead.strip())
+                        results.append(("\n".join(context)))
+    except Exception as e:
+        print(f"Failed to read {filepath}: {e}")
+    return results
+
+def scan_all_dumpstates():
+    output_path = Path(OUTPUT_FILE)
+    with open(output_path, "w", encoding="utf-8") as out:
+        for root, _, files in os.walk("."):
+            for file in files:
+                if file.lower().startswith("dumpstate") and file.lower().endswith(".log"):
+                    filepath = Path(root) / file
+                    out.write(f"\n\n========== FILE: {filepath} ==========\n")
+                    findings = find_matches_and_trace(filepath)
+                    if findings:
+                        for block in findings:
+                            out.write("\n" + block + "\n")
+                    else:
+                        out.write("No relevant issues found.\n")
+
+if __name__ == "__main__":
+    scan_all_dumpstates()
