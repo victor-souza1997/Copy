@@ -1,0 +1,48 @@
+import os
+import re
+from pathlib import Path
+
+# Patterns to look for
+PATTERNS = {
+    "ANR": r"\bANR\b",
+    "FATAL EXCEPTION": r"FATAL EXCEPTION",
+    "FATAL SIGNAL": r"Fatal signal",
+    "CAMERA ERROR": r"(CameraService|camera error|CameraProvider|E Camera)"
+}
+
+# Output file
+OUTPUT_FILE = "summary_camera_anr.txt"
+
+def find_matches_in_file(filepath: Path):
+    results = {key: [] for key in PATTERNS}
+    try:
+        with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
+            for line in f:
+                for key, pattern in PATTERNS.items():
+                    if re.search(pattern, line, re.IGNORECASE):
+                        results[key].append(line.strip())
+    except Exception as e:
+        print(f"Failed to read {filepath}: {e}")
+    return results
+
+def scan_all_dumpstates():
+    output_path = Path(OUTPUT_FILE)
+    with open(output_path, "w", encoding="utf-8") as out:
+        for root, _, files in os.walk("."):
+            for file in files:
+                if file.lower().startswith("dumpstate") and file.lower().endswith(".log"):
+                    filepath = Path(root) / file
+                    out.write(f"\n\n========== FILE: {filepath} ==========\n")
+                    matches = find_matches_in_file(filepath)
+                    found_any = False
+                    for key, lines in matches.items():
+                        if lines:
+                            found_any = True
+                            out.write(f"\n----- {key} FOUND -----\n")
+                            for line in lines:
+                                out.write(line + "\n")
+                    if not found_any:
+                        out.write("No relevant issues found.\n")
+
+if __name__ == "__main__":
+    scan_all_dumpstates()
