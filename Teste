@@ -1,0 +1,188 @@
+import os
+import re
+import sys
+import argparse
+import zipfile
+from pathlib import Path
+from typing import List, Union
+
+RESULTS_DIR = Path("results")
+RESULTS_DIR.mkdir(exist_ok=True)
+
+SECTION_HEADERS = {
+    "reset_info": r"-{5,}\s*AP RESET INFO EXTEND\s*-{5,}",
+    "beginning_of_events": r"-{5,}\s*beginning of events\s*-{5,}",
+    "anr_fatal": r"(ANR in|FATAL EXCEPTION|Fatal signal|CRASH|Watchdog)",
+    "overheat": r"(thermal mitigation|overheat|thermal event|over-heating)",
+    "memory": r"(low memory|memory leak|out of memory|OOM|meminfo)",
+    "camera": r"(CameraService|camera error|CameraProvider|E Camera)"
+}
+
+RESET_KEYWORDS = ["KP", "PF_", "PF_WD", "NP", "RP", "MP"]
+
+def read_file(filepath: Path) -> str:
+    with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
+        return f.read()
+
+def extract_section(text: str, section_name: str) -> str:
+    header_pattern = SECTION_HEADERS[section_name]
+    sections = re.split(header_pattern, text, flags=re.IGNORECASE)
+    if len(sections) > 1:
+        return sections[1]
+    return ""
+
+def save_log(filename: str, lines: List[str]):
+    output_path = RESULTS_DIR / filename
+    with open(output_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines))
+
+def analyze_reset_info(text: str, filename: str):
+    section = extract_section(text, "reset_info")
+    resets = [line for line in section.splitlines() if any(code in line for code in RESET_KEYWORDS)]
+    if resets:
+        save_log(f"{filename}_reset_info.txt", resets)
+
+def analyze_anr_crash(text: str, filename: str):
+    found = [line for line in text.splitlines() if re.search(SECTION_HEADERS["anr_fatal"], line, re.IGNORECASE)]
+    if found:
+        save_log(f"{filename}_anr_crash.txt", found)
+
+def analyze_overheat(text: str, filename: str):
+    lines = []
+    for line in text.splitlines():
+        if re.search(SECTION_HEADERS["overheat"], line, re.IGNORECASE):
+            lines.append(line)
+        if "thermal" in line and "app" in line:
+            lines.append(line)
+    if lines:
+        save_log(f"{filename}_overheat.txt", lines)
+
+def analyze_memory(text: str, filename: str):
+    found = [line for line in text.splitlines() if re.search(SECTION_HEADERS["memory"], line, re.IGNORECASE)]
+    if found:
+        save_log(f"{filename}_memory.txt", found)
+
+def analyze_camera(text: str, filename: str):
+    found = [line for line in text.splitlines() if re.search(SECTION_HEADERS["camera"], line, re.IGNORECASE)]
+    if found:
+        save_log(f"{filename}_camera.txt", found)
+
+def decision_engine(filename: str):
+    messages = []
+    final_causes = []
+
+    def check_lines(file_suffix):
+        path = RESULTS_DIR / f"{filename}_{file_suffix}.txt"
+        if path.exists():
+            with open(path, "r", encoding="utf-8") as f:
+                return f.read()
+        return ""
+
+    reset_log = check_lines("reset_info")
+    anr_log = check_lines("anr_crash")
+    overheat_log = check_lines("overheat")
+    memory_log = check_lines("memory")
+    camera_log = check_lines("camera")
+
+    if "KP" in reset_log:
+        messages.append("✔ Kernel Panic found in reset info.")
+        final_causes.append("Kernel Panic")
+    elif "PF_WD" in reset_log or "Watchdog" in anr_log:
+        messages.append("✔ Watchdog reset detected.")
+        final_causes.append("Watchdog Reset")
+    elif any(code in reset_log for code in ["NP", "RP", "MP"]):
+        messages.append("ℹ Normal reset reason found (NP/RP/MP).")
+
+    if "FATAL EXCEPTION" in anr_log or "ANR" in anr_log:
+        messages.append("✔ Fatal Exception or ANR detected.")
+        final_causes.append("App Crash")
+
+    if overheat_log:
+        messages.append("✔ Signs of overheat detected.")
+        if "shutdown" in reset_log:
+            final_causes.append("Thermal Shutdown")
+
+    if memory_log:
+        messages.append("⚠ Memory pressure or OOM detected.")
+        if "ANR" in anr_log:
+            final_causes.append("Low Memory → App Crash")
+
+    if camera_log and ("camera" in anr_log.lower() or camera_log):
+        messages.append("📷 Camera-related crash detected.")
+        final_causes.append("Camera Failure")
+
+    if not any([reset_log, anr_log, overheat_log, memory_log, camera_log]):
+        messages.append("❌ No significant logs found.")
+        final_causes.append("Unknown")
+
+    result_summary = "\n".join(messages + ["", f"🔍 Final Assessment: {', '.join(set(final_causes))}"])
+    with open(RESULTS_DIR / f"{filename}_summary.txt", "w", encoding="utf-8") as f:
+        f.write(result_summary)
+
+    print(result_summary)
+
+def analyze_dumpstate_file(filepath: Path, args):
+    print(f"📂 Analyzing: {filepath}")
+    text = read_file(filepath)
+    filename = filepath.stem
+
+    if args.all or args.reset:
+        analyze_reset_info(text, filename)
+    if args.all or args.anr:
+        analyze_anr_crash(text, filename)
+    if args.all or args.overheat:
+        analyze_overheat(text, filename)
+    if args.all or args.memory:
+        analyze_memory(text, filename)
+    if args.all or args.camera:
+        analyze_camera(text, filename)
+
+    decision_engine(filename)
+
+def unzip_all(root_path: Path):
+    """Unzips any .zip file found recursively inside the folder."""
+    for root, _, files in os.walk(root_path):
+        for file in files:
+            if file.lower().endswith(".zip"):
+                zip_path = Path(root) / file
+                extract_folder = zip_path.parent / f"unzipped_{zip_path.stem}"
+                if not extract_folder.exists():
+                    print(f"🗜️ Unzipping: {zip_path}")
+                    try:
+                        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                            zip_ref.extractall(extract_folder)
+                    except Exception as e:
+                        print(f"❌ Failed to unzip {zip_path}: {e}")
+
+def analyze_path(input_path: Union[str, Path], args):
+    path = Path(input_path)
+
+    if path.is_dir():
+        unzip_all(path)
+
+    if path.is_file():
+        analyze_dumpstate_file(path, args)
+    elif path.is_dir():
+        for root, _, files in os.walk(path):
+            for file in files:
+                if file.lower().startswith("dumpstate") and file.lower().endswith(".log"):
+                    analyze_dumpstate_file(Path(root) / file, args)
+    else:
+        print(f"❌ Invalid path: {input_path}")
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="Analyze Samsung Android dumpstate logs.")
+    parser.add_argument("path", type=str, help="Path to a dumpstate log file or folder")
+    parser.add_argument("--reset", action="store_true", help="Analyze AP RESET INFO EXTEND section")
+    parser.add_argument("--anr", action="store_true", help="Analyze ANRs, crashes, watchdogs")
+    parser.add_argument("--overheat", action="store_true", help="Analyze thermal and overheating events")
+    parser.add_argument("--memory", action="store_true", help="Analyze memory usage and OOMs")
+    parser.add_argument("--camera", action="store_true", help="Analyze camera-related errors")
+    parser.add_argument("--all", action="store_true", help="Run all checks (default if none specified)")
+    return parser.parse_args()
+
+if __name__ == "__main__":
+    args = parse_args()
+    if not any([args.reset, args.anr, args.overheat, args.memory, args.camera, args.all]):
+        args.all = True  # default to all if no filter selected
+    analyze_path(args.path, args)
